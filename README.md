@@ -1,5 +1,14 @@
 This example show how to deploy the vLLM serve with ROCm/k8s-device-plugin.
 
+# Steps
+## 1st create cluster
+
+```bash
+kind create cluster --name vllm-cluster
+```
+
+## 2nd 
+
 # Setup the k8s cluster
 You should setup the k8s cluster at first.
 
@@ -125,6 +134,9 @@ kubectl create -f https://raw.githubusercontent.com/ROCm/k8s-device-plugin/maste
 
 ```
 kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/refs/heads/main/deployments/static/nvidia-device-plugin.yml
+
+kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.1/nvidia-device-plugin.yml
+
 kubectl apply -f hf_token.yaml
 kubectl apply -f deployment.yaml
 kubectl apply -f service.yaml

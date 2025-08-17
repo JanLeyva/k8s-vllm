@@ -9,5 +9,5 @@ spec:
   resources:
     requests:
       storage: 50Gi
-  storageClassName: local-path
+  storageClassName: standard
   volumeMode: Filesystem

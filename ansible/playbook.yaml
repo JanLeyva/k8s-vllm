@@ -1,0 +1,152 @@
+---
+- name: Setup vLLM on Remote VM
+  hosts: remote_vm
+  become: yes
+  vars:
+    minikube_version: "v1.33.1"
+    project_dir: "/home/{{ ansible_user }}/k8s-vllm"
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - conntrack
+        state: present
+
+    - name: Check if Docker is installed
+      ansible.builtin.command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Install Docker
+      when: docker_check.failed
+      block:
+        - name: Add Docker GPG key
+          ansible.builtin.get_url:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: '0644'
+            force: true
+
+        - name: Add Docker repository
+          ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
+            state: present
+
+        - name: Install Docker Engine
+          ansible.builtin.apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            update_cache: yes
+
+    - name: Add user to docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Verify NVIDIA drivers
+      ansible.builtin.command: nvidia-smi
+      changed_when: false
+
+    - name: Verify NVIDIA Container Toolkit
+      ansible.builtin.command: sudo docker run --rm --gpus all nvidia/cuda:11.6.2-base-ubuntu20.04 nvidia-smi
+      changed_when: false
+
+- name: Install Minikube and Kubectl
+  hosts: remote_vm
+  become: yes
+  vars:
+    minikube_version: "v1.33.1"
+
+  tasks:
+    - name: Download Minikube binary
+      ansible.builtin.get_url:
+        url: "https://storage.googleapis.com/minikube/releases/{{ minikube_version }}/minikube-linux-amd64"
+        dest: /usr/local/bin/minikube
+        mode: '0755'
+
+    - name: Download Kubectl binary
+      ansible.builtin.get_url:
+        url: "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
+- name: Configure and Start Minikube
+  hosts: remote_vm
+  become: no
+  tasks:
+    - name: Start Minikube
+      ansible.builtin.command: minikube start --driver=docker --gpus=all
+      args:
+        creates: "~/.minikube/config/config.json"
+
+    - name: Enable NVIDIA device plugin
+      ansible.builtin.command: minikube addons enable nvidia-device-plugin
+      changed_when: false
+
+    - name: Verify GPU visibility in Kubernetes
+      ansible.builtin.command: minikube kubectl -- describe node minikube
+      register: node_description
+      changed_when: false
+      failed_when: "'nvidia.com/gpu' not in node_description.stdout"
+
+- name: Deploy vLLM Application
+  hosts: remote_vm
+  become: no
+  vars:
+    project_dir: "/home/{{ ansible_user }}/k8s-vllm"
+
+  tasks:
+    - name: Create project directory on remote VM
+      ansible.builtin.file:
+        path: "{{ project_dir }}"
+        state: directory
+
+    - name: Copy project files to remote VM
+      ansible.builtin.copy:
+        src: "./"
+        dest: "{{ project_dir }}"
+
+    - name: Create Hugging Face token secret from template
+      ansible.builtin.template:
+        src: "templates/hf_token.yaml.j2"
+        dest: "{{ project_dir }}/inference/hf_token.yaml"
+
+    - name: Deploy vLLM application
+      ansible.builtin.command: "minikube kubectl -- apply -f {{ project_dir }}/inference/"
+      changed_when: false
+
+    - name: Wait for vLLM deployment to be ready
+      ansible.builtin.command: "minikube kubectl -- wait --for=condition=available deployment/mistral-7b --timeout=600s"
+      changed_when: false
+
+- name: Deploy Monitoring Stack
+  hosts: remote_vm
+  become: no
+  vars:
+    project_dir: "/home/{{ ansible_user }}/k8s-vllm"
+
+  tasks:
+    - name: Deploy Grafana and Prometheus
+      ansible.builtin.command: "minikube kubectl -- apply -f {{ project_dir }}/observability/"
+      changed_when: false
+
+    - name: Wait for Grafana deployment to be ready
+      ansible.builtin.command: "minikube kubectl -- wait --for=condition=available deployment/grafana -n default --timeout=300s"
+      changed_when: false

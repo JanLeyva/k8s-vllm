@@ -17,7 +17,7 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
-        prometheus.io/path: "/"
+        prometheus.io/path: "/metrics"
     spec:
       volumes:
       - name: cache-volume

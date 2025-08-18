@@ -1,185 +1,185 @@
-This example show how to deploy the vLLM serve with ROCm/k8s-device-plugin.
 
-# Steps
-## 1st create cluster
+# Setting up a Kubernetes Cluster with Minikube for vLLM on a GPU Machine
+
+This guide provides a detailed, step-by-step process for setting up a local Kubernetes cluster using `minikube` on a GPU-enabled machine (like a [Lambda Labs](https://lambda.ai) instance) to deploy and serve a vLLM model.
+
+
+<p align="center">
+  <img src="https://i.imgur.com/R2vH9VW.png" title="grafana metrics">
+</p>
+
+## Prerequisites
+
+Before you begin, ensure that your machine has the following:
+
+*   **NVIDIA Drivers:** The appropriate NVIDIA drivers for your GPU must be installed.
+*   **Docker:** `minikube` will use Docker as the driver for creating the Kubernetes cluster.
+*   **Homebrew (optional but recommended):** A package manager for installing `minikube` and other tools.
+
+## Step 1: Verify NVIDIA Toolkit Installation
+
+First, we need to ensure that the NVIDIA drivers and the NVIDIA Container Toolkit are installed and working correctly.
+
+**a. Verify NVIDIA Drivers:**
+
+Run `nvidia-smi` to check the status of your GPU and drivers.
 
 ```bash
-kind create cluster --name vllm-cluster
+nvidia-smi
 ```
 
-## 2nd 
+You should see a table with your GPU information.
 
-# Setup the k8s cluster
-You should setup the k8s cluster at first.
+**b. Verify NVIDIA Container Toolkit:**
 
-# Install the k8s-device-plugin
- The device plugin will enable registration of AMD GPU to a container cluster.
+The NVIDIA Container Toolkit allows Docker containers to access the GPU. You can verify its installation by running a test Docker container:
 
-```
-kubectl create -f https://raw.githubusercontent.com/ROCm/k8s-device-plugin/master/k8s-ds-amdgpu-dp.yaml
-kubectl create -f https://raw.githubusercontent.com/ROCm/k8s-device-plugin/master/k8s-ds-amdgpu-labeller.yaml
+```bash
+sudo docker run --rm --gpus all nvidia/cuda:11.6.2-base-ubuntu20.04 nvidia-smi
 ```
 
-# Prepare the k8s yaml files
+If this command works, it will print the `nvidia-smi` output. This is a crucial verification step. If it fails, you need to install or fix the NVIDIA Container Toolkit installation before proceeding.
 
-1. Secret is optional and only required for accessing gated models, you can skip this step if you are not using gated models.
+## Step 2: Install `minikube` and `kubectl`
 
-    Here is the example `hf_token.yaml`
+Next, we'll install `minikube` and the Kubernetes command-line tool, `kubectl`.
 
+**a. Install `minikube` and `kubectl`:**
+
+```bash
+brew install minikube
+brew install kubectl
+```
+
+**b. Install `conntrack`:**
+
+`minikube` requires the `conntrack` tool.
+
+```bash
+sudo apt-get update && sudo apt-get install -y conntrack
+```
+
+## Step 3: Start the `minikube` Cluster
+
+Now, we'll start the Kubernetes cluster with GPU support.
+
+```bash
+minikube start --driver=docker --gpus=all
+```
+
+This command will download the necessary images and create a single-node Kubernetes cluster. To check the status of your cluster, run:
+
+```bash
+minikube status
+```
+
+## Step 4: Enable GPU Support in `minikube`
+
+`minikube` provides an easy way to enable the NVIDIA device plugin, which makes the GPU available to Kubernetes.
+
+**a. Enable the addon:**
+
+```bash
+minikube addons enable nvidia-device-plugin
+```
+
+**b. Verify GPU visibility:**
+
+Now, check if Kubernetes can see the GPU. The `kubectl` binary that comes with `minikube` is not automatically added to your `PATH`. You can either use `minikube kubectl --` or create an alias.
+
+To create a temporary alias for your current session:
+```bash
+alias kubectl="minikube kubectl --"
+```
+
+Now, run:
+```bash
+kubectl describe node minikube
+```
+
+In the output, under the `Capacity` and `Allocatable` sections, you should see a line like `nvidia.com/gpu: 1`.
+
+## Step 5: Deploy the vLLM Application
+
+Now, we'll deploy the vLLM application.
+
+**a. Update Hugging Face Token:**
+
+Make sure you have updated your Hugging Face token in the `inference/hf_token.yaml` file.
+
+
+For initial debugging, you can also comment out or remove the `livenessProbe` and `readinessProbe` sections entirely.
+
+**b. Deploy the application:**
+
+```bash
+kubectl apply -f inference/
+```
+
+## Step 6: Verify the Deployment
+
+Here are some commands to check the status of your deployment.
+
+*   **Watch the pod status:**
+    ```bash
+    kubectl get pods -w
     ```
-    apiVersion: v1
-    kind: Secret
-    metadata:
-    name: hf-token-secret
-    namespace: default
-    type: Opaque
-    data:
-    token: "REPLACE_WITH_TOKEN"
-    ```
+    Wait for the pod's status to become `Running`.
 
-    NOTE: you should use base64 to encode your HF TOKEN for the hf_token.yaml
-
-    ```
-    echo -n `<your HF TOKEN>` | base64
-    ```
-
-2. Define the deployment workload
-    
-    deployment.yaml
-
-    ```
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-    name: mistral-7b
-    namespace: default
-    labels:
-        app: mistral-7b
-    spec:
-    replicas: 1
-    selector:
-        matchLabels:
-        app: mistral-7b
-    template:
-        metadata:
-        labels:
-            app: mistral-7b
-        spec:
-        volumes:
-        # vLLM needs to access the host's shared memory for tensor parallel inference.
-        - name: shm
-            emptyDir:
-            medium: Memory
-            sizeLimit: "8Gi"
-        hostNetwork: true
-        hostIPC: true
-        containers:
-        - name: mistral-7b
-            image: rocm/vllm:rocm6.2_mi300_ubuntu20.04_py3.9_vllm_0.6.4
-            securityContext:
-            seccompProfile:
-                type: Unconfined
-            capabilities:
-                add:
-                - SYS_PTRACE
-            command: ["/bin/sh", "-c"]
-            args: [
-            "vllm serve mistralai/Mistral-7B-v0.3 --port 8000 --trust-remote-code --enable-chunked-prefill --max_num_batched_tokens 1024"
-            ]
-            env:
-            - name: HUGGING_FACE_HUB_TOKEN
-            valueFrom:
-                secretKeyRef:
-                name: hf-token-secret
-                key: token
-            ports:
-            - containerPort: 8000
-            resources:
-            limits:
-                cpu: "10"
-                memory: 20G
-                amd.com/gpu: "1"
-            requests:
-                cpu: "6"
-                memory: 6G
-                amd.com/gpu: "1"
-            volumeMounts:
-            - name: shm
-            mountPath: /dev/shm
-    ```   
-
-3. Define the service.yaml
-
-    ```
-    apiVersion: v1
-    kind: Service
-    metadata:
-    name: mistral-7b
-    namespace: default
-    spec:
-    ports:
-    - name: http-mistral-7b
-        port: 80
-        protocol: TCP
-        targetPort: 8000
-    # The label selector should match the deployment labels & it is useful for prefix caching feature
-    selector:
-        app: mistral-7b
-    sessionAffinity: None
-    type: ClusterIP
+*   **Check the pod's logs:**
+    ```bash
+    kubectl logs <your-pod-name>
     ```
 
+*   **Check the logs of a crashed container:**
+    ```bash
+    kubectl logs <your-pod-name> --previous
+    ```
 
-# Launch the pods
+*   **Check the PVC status:**
+    ```bash
+    kubectl get pvc
+    ```
+    The status should be `Bound`.
 
-```
-kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/refs/heads/main/deployments/static/nvidia-device-plugin.yml
+## Step 7: Access the vLLM Service
 
-kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.1/nvidia-device-plugin.yml
+To access your vLLM service, you can use `kubectl port-forward`.
 
-kubectl apply -f hf_token.yaml
-kubectl apply -f deployment.yaml
-kubectl apply -f service.yaml
-```
-    
-
-# Test the service
-
-Get the Service IP by 
-
-```
-kubectl get svc
-```
-The mistral-7b is the service name. We can access the vllm serve by the CLUSTER-IP and PORT of it like,
-
-Get models by (please use the real CLUSTER-IP of your environment)
-
-```
-curl http://<CLUSTER-IP>:80/v1/models
+```bash
+kubectl port-forward svc/mistral-7b 8000:80
 ```
 
-Do request
-```
-curl http://<CLUSTER-IP>:80/v1/completions   -H "Content-Type: application/json"   -d '{
-        "model": "mistralai/Mistral-7B-v0.3",
-        "prompt": "San Francisco is a",
-        "max_tokens": 7,
-        "temperature": 0
-      }'
-```
+This will forward port `8000` on your local machine to the service. You can then send requests to `localhost:8000`.
 
-
-
+Note: now you can test the inference of the model in your VM.
 ```
-curl http://10.43.15.36:80/v1/completions   -H "Content-Type: application/json"   -d '{
+curl http://localhost:8000/v1/completions   -H "Content-Type: application/json"   -d '{
         "model": "mistralai/Mistral-7B-Instruct-v0.3",
         "prompt": "Im testing a A100 to run a 7B model... what do u think about it",
         "max_tokens": 20,
         "temperature": 0
       }'
-````
+```
 
-- to check my pod logs: `kubectl logs mistral-7b-7f5d69d9c9-vxjjw`
-- to descrive my pod: `kubectl describe pod mistral-7b-7f5d69d9c9-vxjjw`
-- get services: `kubectl get svc mistral-7b`
-- get persistent volumes: `kubectl get pvc`
+## Step 8: (Optional) Deploy and Access Grafana
+
+**a. Deploy the monitoring stack:**
+
+```bash
+kubectl apply -f observability/
+```
+
+**b. Access the Grafana dashboard:**
+
+The most secure way to access the Grafana dashboard running on your remote machine is to use SSH local port forwarding.
+
+Open a **new terminal on your local computer** and run:
+
+```bash
+ssh -L 3000:localhost:3000 user@your-lambda-labs-ip
+```
+
+Then, in your local browser, go to `http://localhost:3000`. The default credentials are `admin`/`admin`.
+
+F[or further details in grafana & prometheus in vLLM](https://docs.vllm.ai/en/v0.7.2/getting_started/examples/prometheus_grafana.html)

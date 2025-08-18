@@ -14,6 +14,9 @@ spec:
     metadata:
       labels:
         app: mistral-7b
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
     spec:
       volumes:
       - name: cache-volume
